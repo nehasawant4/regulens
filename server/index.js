@@ -19,9 +19,11 @@ const assistant = pc.Assistant('regulens'); // replace with your assistant name
 
 const pdfParse = require('pdf-parse');
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const OpenAI = require('openai');
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 const axios = require('axios');
 const FormData = require('form-data');
@@ -51,7 +53,7 @@ app.post('/api/upload_pdf', upload.single('file'), async (req, res) => {
 
 
 
-app.post('/query-gemini', upload.single('file'), async (req, res) => {
+app.post('/query-gpt4o', upload.single('file'), async (req, res) => {
   const question = req.body.question;
   const file = req.file;
 
@@ -62,11 +64,16 @@ app.post('/query-gemini', upload.single('file'), async (req, res) => {
   try {
     let documentText = '';
 
-    // 1. If PDF uploaded, extract text
+    // 1. If file uploaded, extract text (PDF or TXT)
     if (file) {
+      const ext = path.extname(file.originalname).toLowerCase();
       const buffer = fs.readFileSync(file.path);
-      const parsed = await pdfParse(buffer);
-      documentText = parsed.text;
+      if (ext === '.txt') {
+        documentText = buffer.toString('utf-8');
+      } else {
+        const parsed = await pdfParse(buffer);
+        documentText = parsed.text;
+      }
       fs.unlinkSync(file.path); // cleanup
     }
 
@@ -106,6 +113,104 @@ app.post('/query-gemini', upload.single('file'), async (req, res) => {
   } catch (err) {
     console.error('❌ Assistant query failed:', err.response?.data || err.message);
     res.status(500).json({ error: 'Query to Pinecone Assistant failed' });
+  }
+});
+
+
+app.post('/generate-suggestions', async (req, res) => {
+  const { paragraphs, complianceNotes } = req.body;
+
+  if (!Array.isArray(paragraphs) || paragraphs.length === 0) {
+    return res.status(400).json({ error: 'Paragraphs array is required.' });
+  }
+
+  try {
+    // Using GPT-4o model
+
+    const results = await Promise.all(paragraphs.map(async (para) => {
+  // Updated prompt: instruct AI to return a single JSON object for each paragraph
+  const prompt = `You are an FDA compliance assistant. Given the following SOP paragraph and compliance notes, suggest minimal edits to make the paragraph compliant. 
+
+  Follow these rules strictly:
+  - DO NOT rephrase or restructure existing sentences.
+  - Only change specific values or terms directly related to the compliance issue (e.g., update "50mg" to "100mg").
+  - If new information must be added, append it as a new sentence at the end of the paragraph.
+  - DO NOT add extra commentary, explanations, or unnecessary wording.
+  
+  Return ONLY a single JSON object with these keys:
+  - original: the original paragraph
+  - suggestion: the minimally modified version (or 'NO CHANGE' if already compliant)
+  - reason: explain exactly what was changed and why
+  
+  Paragraph: "${para}"
+  Compliance Notes: "${complianceNotes}"
+  
+  Return only the JSON object.`;
+
+  const result = await openai.chat.completions.create({
+      model: "gpt-4o-2024-08-06",
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" }
+    });
+  const raw = result.choices[0].message.content.trim();
+  // Try to parse the AI output as JSON
+  try {
+    let json = null;
+    // Try parsing as object
+    try {
+      json = JSON.parse(raw);
+    } catch (e) {
+      // Try to extract JSON object from text if AI returns extra commentary
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        json = JSON.parse(match[0]);
+      } else {
+        throw e;
+      }
+    }
+    // If the AI returns an array, use the first item
+    if (Array.isArray(json)) {
+      json = json[0];
+    }
+    return {
+      original: para,
+      suggestion: json.suggestion || 'NO CHANGE',
+      reason: json.reason || '',
+    };
+  } catch (err) {
+    // Log the raw output for debugging
+    console.error('AI returned unparseable output:', raw);
+    return {
+      original: para,
+      suggestion: 'NO CHANGE',
+      reason: 'AI did not return structured output.'
+    };
+  }
+}));
+
+    res.json({ suggestions: results });
+  } catch (err) {
+    console.error('❌ Suggestion generation failed:', err);
+    res.status(500).json({ error: 'Failed to generate suggestions' });
+  }
+});
+
+app.post('/extract-pdf-text', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const pdfPath = path.resolve(req.file.path);
+    const dataBuffer = fs.readFileSync(pdfPath);
+
+    const pdfData = await pdfParse(dataBuffer);
+    const text = pdfData.text;
+
+    fs.unlinkSync(pdfPath); // cleanup
+
+    res.json({ text });
+  } catch (err) {
+    console.error('❌ Failed to extract PDF text:', err);
+    res.status(500).json({ error: 'Failed to extract PDF text' });
   }
 });
 

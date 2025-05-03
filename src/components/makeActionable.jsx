@@ -8,7 +8,7 @@ export async function makeActionable(issue) {
   if (!issue || typeof issue !== 'string') return '⚠️ No issue provided';
 
   try {
-    const response = await fetch('http://localhost:5050/make_actionable', {
+    const response = await fetch('http://127.0.0.1:5050/make_actionable', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
