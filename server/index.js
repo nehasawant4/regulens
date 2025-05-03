@@ -23,10 +23,32 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+const axios = require('axios');
+const FormData = require('form-data');
+
+
 // helper: strip context too long
 function trim(text, maxTokens = 12000) {
   return text.split(' ').slice(0, maxTokens).join(' ');
 }
+
+app.post('/api/upload_pdf', upload.single('file'), async (req, res) => {
+  const formData = new FormData();
+  formData.append('file', fs.createReadStream(req.file.path));
+  formData.append('type', req.body.type);
+  formData.append('label', req.body.label);
+
+  try {
+    const response = await axios.post('http://localhost:5000/upload_pdf', formData, {
+      headers: formData.getHeaders()
+    });
+    res.json(response.data);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
 
 
 app.post('/query-gemini', upload.single('file'), async (req, res) => {
